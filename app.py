@@ -65,18 +65,28 @@ st.markdown("""
         box-shadow: 0 8px 24px rgba(37, 99, 235, 0.10); 
     }
     
-    /* BLINKING RED PULSE FOR HIGH PRIORITY (80+ OUT OF 100) */
+    /* MILD BLINKING RED BORDER PULSE (WHITE INTERIOR) */
     @keyframes pulse-soft-crimson {
-        0% { box-shadow: 0 0 6px rgba(225, 29, 72, 0.25); border-color: #FB7185; }
-        50% { box-shadow: 0 0 20px rgba(225, 29, 72, 0.65); border-color: #E11D48; background-color: #FFF1F2; }
-        100% { box-shadow: 0 0 6px rgba(225, 29, 72, 0.25); border-color: #FB7185; }
+        0% { 
+            box-shadow: 0 0 4px rgba(239, 68, 68, 0.20); 
+            border-color: #FECACA; 
+        }
+        50% { 
+            box-shadow: 0 0 14px rgba(239, 68, 68, 0.45); 
+            border-color: #F87171; 
+            background-color: #FFFFFF; 
+        }
+        100% { 
+            box-shadow: 0 0 4px rgba(239, 68, 68, 0.20); 
+            border-color: #FECACA; 
+        }
     }
     
     .blinking-red-card {
-        animation: pulse-soft-crimson 1.8s infinite !important;
-        background: #FFF1F2 !important;
-        border: 2px solid #E11D48 !important;
-        border-left: 8px solid #BE123C !important;
+        animation: pulse-soft-crimson 2s infinite !important;
+        background: #FFFFFF !important;
+        border: 1.5px solid #F87171 !important;
+        border-left: 6px solid #EF4444 !important;
         border-radius: 14px !important;
         padding: 18px 22px !important;
         margin-bottom: 14px;
@@ -135,9 +145,9 @@ st.markdown("""
         position: relative;
     }
     .flow-box-priority-high { 
-        animation: pulse-soft-crimson 1.8s infinite !important;
-        background: #FFF1F2 !important; 
-        border: 2px solid #E11D48 !important; 
+        animation: pulse-soft-crimson 2s infinite !important;
+        background: #FFFFFF !important; 
+        border: 1.5px solid #F87171 !important; 
     }
     .flow-box-amber { border: 1.5px solid #D97706 !important; background: #FFFBEB !important; }
     .flow-box-green { border: 1.5px solid #059669 !important; background: #F0FDF4 !important; }
