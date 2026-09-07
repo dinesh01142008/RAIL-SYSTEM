@@ -65,6 +65,7 @@ st.markdown("""
         box-shadow: 0 8px 24px rgba(37, 99, 235, 0.10); 
     }
     
+    /* MILD BLINKING RED BORDER PULSE (WHITE INTERIOR) */
     @keyframes pulse-soft-crimson {
         0% { 
             box-shadow: 0 0 4px rgba(239, 68, 68, 0.20); 
@@ -201,7 +202,7 @@ st.markdown("""
 PLOT_CONFIG = {'displayModeBar': False, 'scrollZoom': True}
 
 # ==============================================================================
-# 2. PAN-INDIA RAILWAY NETWORK DATABASE
+# 2. PAN-INDIA RAILWAY NETWORK DATABASE[cite: 1, 2]
 # ==============================================================================
 RAILWAY_NETWORK = {
     "Tamil Nadu": {
@@ -289,7 +290,7 @@ RAILWAY_NETWORK = {
 }
 
 # ==============================================================================
-# 3. HELPER FUNCTIONS & WORK ORDER GENERATORS
+# 3. HELPER FUNCTIONS & WORK ORDER GENERATORS[cite: 1, 2]
 # ==============================================================================
 def format_24h(minutes):
     try:
@@ -298,6 +299,14 @@ def format_24h(minutes):
         return f"{total // 60:02d}:{total % 60:02d} Hours"
     except Exception:
         return "00:00 Hours"
+
+def parse_24h_to_minutes(time_str):
+    try:
+        clean = time_str.replace(" Hours", "").replace(" Hrs", "").strip()
+        parts = clean.split(":")
+        return int(parts[0]) * 60 + int(parts[1])
+    except Exception:
+        return 570
 
 def calculate_priority_score(flaw_severity, days_past_due, track_tonnage):
     score = (0.35 * float(flaw_severity) * 10.0) + (0.25 * min(100, float(days_past_due) * 2.5)) + (0.25 * min(100, float(track_tonnage) * 1.2)) + 12.0
@@ -328,7 +337,7 @@ def generate_division_work_orders(stn_list, gmt_val):
     df["Duration (Minutes)"] = df["Duration (Minutes)"].astype(int)
     return df
 
-# Initialize session state variables
+# Session state initialization
 if "active_division_name" not in st.session_state: st.session_state.active_division_name = ""
 if "global_incident_station" not in st.session_state: st.session_state.global_incident_station = "Salem Junction"
 if "global_track_condition" not in st.session_state: st.session_state.global_track_condition = "Track Clear (Normal Line Speed)"
@@ -401,7 +410,7 @@ if "cris_smms_stream" not in st.session_state:
     ])
 
 # ==============================================================================
-# 4. SIDEBAR - UNIFIED FLAT NAVIGATION & LOCATION SELECTOR
+# 4. SIDEBAR - UNIFIED FLAT NAVIGATION & LOCATION SELECTOR[cite: 1, 2]
 # ==============================================================================
 with st.sidebar:
     st.markdown('<h2 style="color:#0F172A; font-weight:900; letter-spacing:-1px; margin-bottom: -5px; margin-top: 5px;">INDIAN RAILWAYS</h2>', unsafe_allow_html=True)
@@ -429,7 +438,6 @@ with st.sidebar:
     division_gmt = sector_data["annual_cargo_passenger_weight_density_gmt"]
     w_div = sector_data["cost_density_multiplier"]
     
-    # State synchronization when division changes
     if st.session_state.active_division_name != sel_division:
         st.session_state.active_division_name = sel_division
         st.session_state.global_incident_station = station_list[0]
@@ -519,13 +527,15 @@ if sim_status != "Track Clear (Normal Line Speed)":
             st.session_state.global_work_zones.append(sim_station)
 
 # ==============================================================================
-# 5. MATHEMATICAL OPTIMIZATION SOLVER & REGIONAL FINANCIAL CALCULATOR
+# 5. MATHEMATICAL TIMETABLE SIMULATOR WITH TRAIN LOOP HOLDING
 # ==============================================================================
-def calculate_train_movements(damaged_stn, status, sector_dict, approved_stns, fleet_dataframe):
+def calculate_train_movements_multiloop(damaged_stn, status, sector_dict, approved_stns, fleet_dataframe):
     try:
         trains = fleet_dataframe.to_dict('records')
         trains = sorted(trains, key=lambda x: x.get("Priority Level", 5))
-        mid_stn = list(sector_dict.keys())[max(0, min(2, len(sector_dict) - 1))] if len(sector_dict) > 0 else ""
+        stn_keys = list(sector_dict.keys())
+        mid_stn = stn_keys[max(0, min(2, len(stn_keys) - 1))] if len(stn_keys) > 0 else ""
+        sankari_stn = stn_keys[max(0, min(3, len(stn_keys) - 1))] if len(stn_keys) > 3 else mid_stn
 
         records = []
         for t in trains:
@@ -533,30 +543,36 @@ def calculate_train_movements(damaged_stn, status, sector_dict, approved_stns, f
             prev_dist = 0
             total_delay = 0
             
-            for stn, dist in sector_dict.items():
+            for stn_idx, (stn, dist) in enumerate(sector_dict.items()):
                 curr_speed = t.get("Top Speed (km/h)", 90)
                 dwell = 2
-                track_lane = "Main Running Track"
+                track_lane = "Main Running Line"
+                on_loop = False
                 condition_label = "Line Clear"
 
-                if stn == damaged_stn:
+                # Dynamic Loop Siding Allocation
+                if stn == damaged_stn and status != "Track Clear (Normal Line Speed)":
                     condition_label = status
                     if "Repair" in status:
                         curr_speed = min(curr_speed, 30)
+                        track_lane = f"Loop Siding Track ({stn})"
+                        on_loop = True
                         total_delay += 8
                     elif "Blocked" in status:
                         dwell += 18
+                        track_lane = f"Loop Siding Track ({stn})"
+                        on_loop = True
                         total_delay += 18
-                        
-                if stn in approved_stns:
-                    condition_label = "Track Work Active (Speed Limit 30 km/h)"
-                    curr_speed = min(curr_speed, 30)
-                    total_delay += 5
-                        
-                if t.get("Train Category") == "Heavy Freight Cargo" and stn == mid_stn and mid_stn != "":
+                elif t.get("Train Category") == "Heavy Freight Cargo" and stn in [sankari_stn, mid_stn]:
                     dwell += 15
-                    track_lane = "Side Parking Track Loop (Waiting for Passenger Express)"
+                    track_lane = f"Loop Siding Track ({stn})"
+                    on_loop = True
                     total_delay += 15
+                elif t.get("Priority Level", 5) >= 4 and stn == mid_stn:
+                    dwell += 10
+                    track_lane = f"Loop Siding Track ({stn})"
+                    on_loop = True
+                    total_delay += 10
                 
                 delta_d = dist - prev_dist if dist > prev_dist else 0
                 travel_time = (delta_d / max(10, curr_speed)) * 60
@@ -570,11 +586,15 @@ def calculate_train_movements(damaged_stn, status, sector_dict, approved_stns, f
                     "Train Name": t.get("Train Name", "Express Train"),
                     "Train Number": t.get("Train Number", "TRN-0000"),
                     "Station": stn,
+                    "Station Index": stn_idx,
                     "Distance (km)": dist, 
                     "Arrival Minute": arrival,
                     "Arrival Time": format_24h(arrival),
+                    "Departure Minute": departure,
+                    "Departure Time": format_24h(departure),
                     "Station Wait Time": f"{int(dwell)} mins",
-                    "Assigned Track Lane": track_lane, 
+                    "Assigned Track Lane": track_lane,
+                    "On Loop": on_loop,
                     "Track Safety Condition": condition_label,
                     "Color": t.get("Color", "#2563EB"),
                     "Total Delay (Minutes)": total_delay,
@@ -584,7 +604,13 @@ def calculate_train_movements(damaged_stn, status, sector_dict, approved_stns, f
     except Exception:
         return pd.DataFrame()
 
-df_traffic = calculate_train_movements(st.session_state.global_incident_station, st.session_state.global_track_condition, current_sector, st.session_state.global_work_zones, st.session_state.fleet_db)
+df_traffic = calculate_train_movements_multiloop(
+    st.session_state.global_incident_station, 
+    st.session_state.global_track_condition, 
+    current_sector, 
+    st.session_state.global_work_zones, 
+    st.session_state.fleet_db
+)
 
 def generate_dynamic_blocks(sector_dict, incident_stn, incident_status, approved_work_zones):
     stations = list(sector_dict.keys())
@@ -604,7 +630,7 @@ def generate_dynamic_blocks(sector_dict, incident_stn, incident_status, approved
             if "Blocked" in incident_status:
                 status = "Track Completely Blocked (Obstacle / Defect)"
                 train = f"Freight Train Stationary near {incident_stn}"
-                eta = "18 mins (Side Parking Track Loop Transit)"
+                eta = "18 mins (Loop Siding Transit)"
             else:
                 status = "Track Repair Needed (Speed Limit: 30 km/h)"
                 train = "Departmental Engineering Work Train"
@@ -872,7 +898,7 @@ def get_cached_financial_audit_statement(division_title, state_title, fin_dict, 
     return out.getvalue(), token
 
 # ==============================================================================
-# 6. PORTAL 1: CENTRAL COMMAND CENTER (MAIN DISPATCH OFFICE)
+# 6. PORTAL 1: CENTRAL COMMAND CENTER
 # ==============================================================================
 if user_portal == "Central Command Center (Main Train Dispatch & Control Office)":
     
@@ -893,7 +919,7 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
         f"Schedule Optimizer [Mixed-Integer Linear Programming (MILP)] synchronized Track stone packing with 25,000-Volt Electric power lines calibration near {st.session_state.global_incident_station}. "
         f"Enforced an 8-minute safe train distance gap [Headway Buffer] and a 15-minute electrical power cutoff safety buffer. Preserved ₹{finance_data['net_money_saved_lakhs']} Lakhs in asset yield."
         if st.session_state.global_track_condition == "Track Clear (Normal Line Speed)" else
-        f"Safety Action Order active at {st.session_state.global_incident_station}. Sidetracking slower freight cargo services to side parking track loops. "
+        f"Safety Action Order active at {st.session_state.global_incident_station}. Sidetracking slower freight cargo services to multiple side parking track loops. "
         f"Emergency maintenance crew allocated an isolated track work window."
     )
 
@@ -1004,7 +1030,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                             time_mod.sleep(0.4)
                             st.rerun()
 
-    # 1. LIVE TRAIN TRAFFIC COMMAND & TRACK MAP
+    # --------------------------------------------------------------------------
+    # 1. LIVE TRAIN TRAFFIC COMMAND & TRACK MAP (GEOGRAPHIC FIRST, RADAR SECOND)
+    # --------------------------------------------------------------------------
     if active_tool == "Live Train Traffic Command & Track Map":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Live Network Command — {sel_division} ({sel_state})</h1>", unsafe_allow_html=True)
 
@@ -1022,8 +1050,15 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
         with c4: st.markdown(f"<div class='premium-card'><div class='card-title'>Total Capital Saved</div><div class='card-value'>₹{finance_data['net_money_saved_lakhs']} Lakhs</div><div class='card-subtitle' style='color:#059669'>{finance_data['loss_mitigation_pct']}% Waste Mitigated</div></div>", unsafe_allow_html=True)
         st.markdown("<br>", unsafe_allow_html=True)
 
-        tabs = st.tabs(["Corridor Geographic Map", "Live Station Stop Timetable", "Train Distance vs Time Graph [Train Movement Chart]"])
+        # Tabs: Geographic Map First, followed by Radar Schematic Map
+        tabs = st.tabs([
+            "Corridor Geographic Map", 
+            "Interactive Traffic Simulation", 
+            "Live Station Stop Timetable", 
+            "Time vs Distance Graph"
+        ])
         
+        # TAB 0: GEOGRAPHIC MAP (FIRST POSITION)[cite: 1, 2]
         with tabs[0]:
             stn_names = list(current_coords.keys())
             lats = [current_coords[s][0] for s in stn_names]
@@ -1068,17 +1103,189 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                     center=dict(lat=float(np.mean(lats)), lon=float(np.mean(lons)))
                 ),
                 margin=dict(l=0, r=0, t=10, b=0),
-                height=450
+                height=460
             )
             st.plotly_chart(fig_map, use_container_width=True, config=PLOT_CONFIG)
 
+        # TAB 1: INTERACTIVE TRAFFIC SIMULATION (RADAR MAP - SECOND POSITION)
         with tabs[1]:
+            st.markdown("<h3 style='font-size: 19px; font-weight: 800; color: #0F172A; margin-bottom: 2px;'>Interactive Temporal Traffic Simulation</h3>", unsafe_allow_html=True)
+            st.markdown("<p style='font-size: 13px; color: #475569; margin-bottom: 12px;'>Adjust the timeline slider to strictly simulate where trains will be at any hour of the day. Notice how the AI mathematically avoids collisions.</p>", unsafe_allow_html=True)
+            
+            # 24-Hour Railway Time Slider (15-min intervals)
+            time_24h_steps = [f"{h:02d}:{m:02d} Hours" for h in range(24) for m in range(0, 60, 15)]
+            selected_24h_str = st.select_slider(
+                "24-Hour Timeline Scrubber",
+                options=time_24h_steps,
+                value="09:30 Hours",
+                label_visibility="collapsed"
+            )
+            sim_min = parse_24h_to_minutes(selected_24h_str)
+
+            disp_time_str = selected_24h_str.replace(" Hours", " Hrs")
+            st.markdown(f"""
+            <div style="background: #EFF6FF; border: 1px solid #BFDBFE; border-radius: 8px; padding: 9px 16px; color: #1E40AF; font-weight: 700; font-size: 13px; margin: 8px 0 16px 0;">
+                Live Simulation Time: {disp_time_str} | Focus Region: {sel_division}
+            </div>
+            """, unsafe_allow_html=True)
+
+            # Schematic Track Radar Diagram with Loop Sidings
+            fig_tippler = go.Figure()
+            stn_dists = current_sector
+            total_corridor_len = max(stn_dists.values()) if len(stn_dists) > 0 else 70.0
+            
+            # 1. Main Running Line Track
+            fig_tippler.add_trace(go.Scatter(
+                x=[0, total_corridor_len],
+                y=[0, 0],
+                mode="lines",
+                line=dict(color="#E2E8F0", width=5),
+                hoverinfo="skip",
+                showlegend=False
+            ))
+
+            # 2. Add Defined Loop Sidings at Strategic Stations
+            stn_keys = list(stn_dists.keys())
+            stn_loop1 = stn_keys[min(1, len(stn_keys)-1)]
+            stn_loop2 = stn_keys[min(3, len(stn_keys)-1)]
+            loop_stations = [stn_loop1, stn_loop2]
+
+            for loop_stn in loop_stations:
+                cx = stn_dists[loop_stn]
+                span = max(2.8, (total_corridor_len / len(stn_keys)) * 0.28)
+                lx = [cx - span, cx - span * 0.45, cx + span * 0.45, cx + span]
+                ly = [0, 1.0, 1.0, 0]
+                
+                fig_tippler.add_trace(go.Scatter(
+                    x=lx,
+                    y=ly,
+                    mode="lines",
+                    line=dict(color="#CBD5E1", width=3.5),
+                    hoverinfo="skip",
+                    showlegend=False
+                ))
+
+            # 3. Vertical Station Markers & Labels
+            for stn_name, x_pos in stn_dists.items():
+                fig_tippler.add_shape(
+                    type="line",
+                    x0=x_pos, x1=x_pos,
+                    y0=-0.35, y1=1.65,
+                    line=dict(color="#CBD5E1", width=1.5, dash="dot")
+                )
+                disp_stn_label = stn_name.replace(" Junction", "").replace(" Central", "").replace(" Express", "")
+                fig_tippler.add_annotation(
+                    x=x_pos,
+                    y=-0.45,
+                    text=f"<b>{disp_stn_label}</b>",
+                    showarrow=False,
+                    font=dict(size=11, color="#64748B", family="Inter")
+                )
+
+            # 4. Interpolate and Plot Train Positions at sim_min
             if not df_traffic.empty:
-                final_df = df_traffic[["Train Name", "Train Number", "Station", "Arrival Time", "Station Wait Time", "Assigned Track Lane", "Track Safety Condition", "Assigned Train Driver"]]
-                final_df.columns = ["Train Name", "Train Number", "Station Stop", "Scheduled Arrival", "Station Wait", "Assigned Track Lane", "Track Condition", "Locomotive Driver"]
+                for _, t_info in st.session_state.fleet_db.iterrows():
+                    t_name = t_info["Train Name"]
+                    t_num = t_info["Train Number"]
+                    t_color = t_info["Color"]
+                    
+                    sub_records = df_traffic[df_traffic["Train Name"] == t_name].sort_values("Distance (km)")
+                    if sub_records.empty:
+                        continue
+                    
+                    first_arr = sub_records["Arrival Minute"].iloc[0]
+                    last_dep = sub_records["Departure Minute"].iloc[-1]
+                    
+                    calc_x = 0.0
+                    calc_y = 0.0
+                    status_text = "En Route"
+                    
+                    if sim_min <= first_arr:
+                        calc_x = sub_records["Distance (km)"].iloc[0]
+                        calc_y = 0.0
+                        status_text = f"Staged at {sub_records['Station'].iloc[0]}"
+                    elif sim_min >= last_dep:
+                        calc_x = sub_records["Distance (km)"].iloc[-1]
+                        calc_y = 0.0
+                        status_text = f"Arrived at {sub_records['Station'].iloc[-1]}"
+                    else:
+                        located = False
+                        for i in range(len(sub_records)):
+                            arr_i = sub_records["Arrival Minute"].iloc[i]
+                            dep_i = sub_records["Departure Minute"].iloc[i]
+                            
+                            # Station stop interval
+                            if arr_i <= sim_min <= dep_i:
+                                calc_x = sub_records["Distance (km)"].iloc[i]
+                                stn_curr = sub_records["Station"].iloc[i]
+                                is_on_loop = sub_records["On Loop"].iloc[i] and (stn_curr in loop_stations)
+                                calc_y = 1.0 if is_on_loop else 0.0
+                                status_text = f"Waiting on Siding Loop at {stn_curr}" if is_on_loop else f"Station Stop at {stn_curr}"
+                                located = True
+                                break
+                            
+                            # Between stations transit
+                            if i < len(sub_records) - 1:
+                                next_arr = sub_records["Arrival Minute"].iloc[i+1]
+                                if dep_i < sim_min < next_arr:
+                                    frac = (sim_min - dep_i) / max(0.1, (next_arr - dep_i))
+                                    d_start = sub_records["Distance (km)"].iloc[i]
+                                    d_end = sub_records["Distance (km)"].iloc[i+1]
+                                    calc_x = d_start + frac * (d_end - d_start)
+                                    calc_y = 0.0
+                                    status_text = f"Mainline Transit ➔ {sub_records['Station'].iloc[i+1]}"
+                                    located = True
+                                    break
+                        
+                        if not located:
+                            calc_x = sub_records["Distance (km)"].iloc[-1]
+                            calc_y = 0.0
+
+                    fig_tippler.add_trace(go.Scatter(
+                        x=[calc_x],
+                        y=[calc_y],
+                        mode="markers+text",
+                        marker=dict(size=17, color=t_color, line=dict(color="white", width=2.5)),
+                        text=[f"<b>{t_num}</b>"],
+                        textposition="top center",
+                        textfont=dict(color=t_color, size=11, family="Inter"),
+                        name=t_name,
+                        hovertemplate=f"<b>{t_name} ({t_num})</b><br>Track Status: {status_text}<br>Position: {calc_x:.1f} km<extra></extra>"
+                    ))
+
+            fig_tippler.update_layout(
+                height=340,
+                xaxis=dict(
+                    visible=False,
+                    range=[-3.0, total_corridor_len + 4.0]
+                ),
+                yaxis=dict(
+                    visible=False,
+                    range=[-0.75, 1.85]
+                ),
+                template="plotly_white",
+                margin=dict(l=20, r=20, t=25, b=25),
+                legend=dict(
+                    orientation="v",
+                    yanchor="top",
+                    y=0.98,
+                    xanchor="right",
+                    x=1.0,
+                    font=dict(family="Inter", size=11, color="#1E293B"),
+                    bgcolor="rgba(255,255,255,0.85)"
+                )
+            )
+            st.plotly_chart(fig_tippler, use_container_width=True, config=PLOT_CONFIG)
+
+        # TAB 2: LIVE STATION STOP TIMETABLE[cite: 1, 2]
+        with tabs[2]:
+            if not df_traffic.empty:
+                final_df = df_traffic[["Train Name", "Train Number", "Station", "Arrival Time", "Departure Time", "Station Wait Time", "Assigned Track Lane", "Track Safety Condition", "Assigned Train Driver"]]
+                final_df.columns = ["Train Name", "Train Number", "Station Stop", "Scheduled Arrival", "Scheduled Departure", "Station Wait", "Assigned Track Lane", "Track Condition", "Locomotive Driver"]
                 st.dataframe(final_df, use_container_width=True, hide_index=True)
 
-        with tabs[2]:
+        # TAB 3: TIME VS DISTANCE GRAPH[cite: 1, 2]
+        with tabs[3]:
             fig_marey = go.Figure()
             for stn, d in current_sector.items():
                 fig_marey.add_hline(y=d, line_dash="dot", line_color="#E2E8F0", annotation_text=f" {stn.split(' ')[0]}", annotation_font=dict(color="#94A3B8", size=11))
@@ -1112,7 +1319,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
             fig_marey.update_layout(height=450, xaxis_title="Timeline (Minutes from Midnight)", yaxis_title="Distance Traveled (km)", template="plotly_white", font=dict(family="Inter", size=12))
             st.plotly_chart(fig_marey, use_container_width=True, config=PLOT_CONFIG)
 
-    # 2. REAL-TIME TRACK SECTION STATUS & SIGNAL BLOCKS
+    # --------------------------------------------------------------------------
+    # 2. REAL-TIME TRACK SECTION STATUS & SIGNAL BLOCKS[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Real-Time Track Section Status & Signal Blocks":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Real-Time Track Section Status — {sel_division}</h1>", unsafe_allow_html=True)
         st.write(f"Physical track blocks computed from the {len(station_list)} stations in **{sel_division} ({sel_state})**.")
@@ -1135,7 +1344,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                     </div>
                     """, unsafe_allow_html=True)
 
-    # 3. PREDICTIVE DELAY PREVENTION & 15-MINUTE LOOKAHEAD
+    # --------------------------------------------------------------------------
+    # 3. PREDICTIVE DELAY PREVENTION & 15-MINUTE LOOKAHEAD[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Predictive Delay Prevention & 15-Minute Lookahead":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Predictive Conflict Detector — {sel_division}</h1>", unsafe_allow_html=True)
         st.write(f"Scans a continuous 15-minute forward window across **{sel_division}**, forecasting trajectory overlaps and avoiding stop-and-go delays.")
@@ -1154,7 +1365,7 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                     </p>
                     <hr style='margin:8px 0; border-color:#E2E8F0;'>
                     <div style='background:#FFF1F2; padding:8px 12px; border-radius:10px; border:1px solid #FECACA; font-size:12px; color:#9F1239;'>
-                        <strong>Automated Action:</strong> Divert Super Vasuki Goods Train to side parking track loop near {sim_station} for 3.5 minutes. Grant clear mainline green signal to Rajdhani Express. Zero passenger delay incurred.
+                        <strong>Automated Action:</strong> Divert Super Vasuki Goods Train to loop siding track near {sim_station} for 3.5 minutes. Grant clear mainline green signal to Rajdhani Express. Zero passenger delay incurred.
                     </div>
                 </div>
             </div>
@@ -1173,13 +1384,15 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                     </p>
                     <hr style='margin:8px 0; border-color:#E2E8F0;'>
                     <div style='background:#FFFBEB; padding:8px 12px; border-radius:10px; border:1px solid #FDE68A; font-size:12px; color:#92400E;'>
-                        <strong>Automated Action:</strong> Synchronize Electrical wire inspection with Civil track packing into a single 45-minute combined work window at {st.session_state.global_incident_station} immediately after Shatabdi Express clears.
+                        <strong>Automated Action:</strong> Synchronize Electrical wire inspection with Civil track packing into a single 45-minute combined work window on loop siding at {st.session_state.global_incident_station} immediately after Shatabdi Express clears.
                     </div>
                 </div>
             </div>
             """, unsafe_allow_html=True)
 
-    # 4. LIVE WAYSIDE TELEMETRY & DATA INGESTION GATEWAY
+    # --------------------------------------------------------------------------
+    # 4. LIVE WAYSIDE TELEMETRY & DATA INGESTION GATEWAY[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Live Wayside Telemetry & Data Ingestion Gateway":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Operational Wayside Telemetry Data Ingestion Gateway</h1>", unsafe_allow_html=True)
         st.write("Direct enterprise integration hub connecting Indian Railways operational systems: Track Management System (TMS), Traction Distribution Management System (TDMS), Signaling System (SMMS), and Control Office Applications.")
@@ -1229,7 +1442,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
             st.markdown("##### Switch Direction Sensors & Wheel Counter Verification")
             st.dataframe(st.session_state.cris_smms_stream, use_container_width=True, hide_index=True)
 
-    # 5. DEPARTMENTAL WORK ORDER SUBMISSION
+    # --------------------------------------------------------------------------
+    # 5. DEPARTMENTAL WORK ORDER SUBMISSION[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Departmental Work Order Submission (Track, Electrical, Signals)":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Departmental Work Order Ingestion Portal</h1>", unsafe_allow_html=True)
         st.write("Submit departmental track possession requests. Set the **Priority Level (1-100)**: any work order scored **80+** triggers an animated blinking red alert.")
@@ -1339,7 +1554,7 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                         "Request ID": new_id, "Department / Team": "Signals & Electronic Switches Team [Signaling and Telecommunication Management System (SMMS)]", 
                         "Station Location": smms_stn, "Work Description": f"{smms_task} - {smms_notes}", 
                         "Priority Level (1-100)": smms_pri, "Duration (Minutes)": smms_dur, 
-                        "Status": "Approved & Scheduled", "Combined Group ID": cid, "Planning Schedule": smms_hor,
+                        "Status": "Approved & Scheduled", "Combined Group ID": cid, "Planning Schedule": tms_hor,
                         "Assigned Machinery": smms_mach, "Flaw Severity (1-10)": smms_sev,
                         "Days Past Due": smms_overdue, "Annual Cargo Weight (GMT)": division_gmt
                     }])
@@ -1351,7 +1566,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
             with c2:
                 render_team_flowchart(team_name="Signals & Electronic Switches Team", job_id="LIVE-ENTRY", stn=smms_stn, dur=smms_dur, work_type=smms_task, notes=smms_notes, priority=smms_pri)
 
-    # 6. LIST OF RUNNING TRAINS & HEAVY REPAIR MACHINES
+    # --------------------------------------------------------------------------
+    # 6. LIST OF RUNNING TRAINS & HEAVY REPAIR MACHINES[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "List of Running Trains & Heavy Repair Machines":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Running Trains & Heavy Repair Machines</h1>", unsafe_allow_html=True)
         st.write("Manage mechanized track maintenance machines, employee duty rosters, and corridor train schedules.")
@@ -1454,7 +1671,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                 time_mod.sleep(0.5)
                 st.rerun()
 
-    # 7. SMART MATH SCHEDULE OPTIMIZER [MILP]
+    # --------------------------------------------------------------------------
+    # 7. SMART MATH SCHEDULE OPTIMIZER [MILP][cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Smart Math Schedule Optimizer [Mixed-Integer Linear Programming (MILP)]":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Smart Math Schedule Optimizer [Mixed-Integer Linear Programming (MILP)]</h1>", unsafe_allow_html=True)
         st.write("Smart Math Schedule Optimizer resolving multi-departmental maintenance requests against train timetables, safe train gap buffers, and mechanized equipment constraints.")
@@ -1494,7 +1713,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
         st.markdown("#### System Output Records & Dispatch Audit History")
         st.dataframe(st.session_state.system_output_records_log, use_container_width=True, hide_index=True)
 
-    # 8. MONEY PRESERVED & FINANCIAL SAVINGS BREAKDOWN
+    # --------------------------------------------------------------------------
+    # 8. MONEY PRESERVED & FINANCIAL SAVINGS BREAKDOWN[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Money Preserved & Financial Savings Breakdown":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Money Preserved & Financial Savings Breakdown</h1>", unsafe_allow_html=True)
         st.write("Quantifies operational economic value preserved across track infrastructure, rolling stock turnaround, and mechanized heavy plant.")
@@ -1556,7 +1777,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
             fig_roi.update_layout(height=280, margin=dict(l=10, r=10, t=25, b=10), font=dict(family="Inter", size=11))
             st.plotly_chart(fig_roi, use_container_width=True, config=PLOT_CONFIG)
 
-    # 9. MONEY WASTED IN OLD MANUAL WAY VS. MONEY SAVED BY SMART SYSTEM
+    # --------------------------------------------------------------------------
+    # 9. MONEY WASTED IN OLD MANUAL WAY VS. MONEY SAVED BY SMART SYSTEM[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Money Wasted in Old Manual Way vs. Money Saved by Smart System":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Money Wasted in Old Manual Way vs. Money Saved by Smart System — {sel_division}</h1>", unsafe_allow_html=True)
         st.write(f"Direct side-by-side ledger comparing operational money wasted by the old manual system versus the operational cost and money saved by our platform ({division_gmt} Gross Million Tonnes [GMT] density, **{w_div:.2f}x** multiplier).")
@@ -1700,7 +1923,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                 use_container_width=True
             )
 
-    # 10. MASTER HORIZON WORK CALENDAR
+    # --------------------------------------------------------------------------
+    # 10. MASTER HORIZON WORK CALENDAR[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Master Horizon Work Calendar (Daily, Weekly, Monthly)":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Automated Block Scheduling Matrix — {sel_division}</h1>", unsafe_allow_html=True)
         st.write("Bundles departmental requests into unified work windows and visualizes safe timetable headway gaps.")
@@ -1799,7 +2024,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                 fig_sched.update_layout(xaxis_title="Track Possession Duration (Minutes)", yaxis_title="", height=360, template="plotly_white", margin=dict(l=0, r=0, t=10, b=10), font=dict(family="Inter"))
                 st.plotly_chart(fig_sched, use_container_width=True, config=PLOT_CONFIG)
 
-    # 11. EMERGENCY TRACK BREAKDOWN & TRAFFIC DELAY TEST
+    # --------------------------------------------------------------------------
+    # 11. EMERGENCY TRACK BREAKDOWN & TRAFFIC DELAY TEST[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Emergency Track Breakdown & Traffic Delay Test":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Emergency Track Breakdown & Traffic Delay Test — {sel_division}</h1>", unsafe_allow_html=True)
         
@@ -1825,7 +2052,7 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                     <div style='font-size:18px; font-weight:800; color:#0F172A;'>{'18 Mins Siding Transit' if 'Blocked' in st.session_state.global_track_condition else ('45 Mins Possession' if 'Repair' in st.session_state.global_track_condition else 'Zero Downtime')}</div>
                     <p style='font-size:12px; color:#64748B; margin: 4px 0;'>
                         <b>Active Running Trains:</b> {len(st.session_state.fleet_db)} Trains Tracked<br>
-                        <b>Downstream Status:</b> {'Side Parking Track Siding Transit (+18m)' if 'Blocked' in st.session_state.global_track_condition else 'On Time'}
+                        <b>Downstream Status:</b> {'Loop Siding Transit (+18m)' if 'Blocked' in st.session_state.global_track_condition else 'On Time'}
                     </p>
                 </div>
             </div>
@@ -1908,7 +2135,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                 </div>
                 """, unsafe_allow_html=True)
 
-    # 12. HOW TRAIN DELAY CONFLICTS ARE SOLVED STEP-BY-STEP
+    # --------------------------------------------------------------------------
+    # 12. HOW TRAIN DELAY CONFLICTS ARE SOLVED STEP-BY-STEP[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "How Train Delay Conflicts Are Solved Step-by-Step":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>How Train Delay Conflicts Are Solved Step-by-Step — {sel_division}</h1>", unsafe_allow_html=True)
         
@@ -1935,8 +2164,8 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                 </div>
                 <div class="flow-arrow"></div>
                 <div class="flow-box flow-box-purple">
-                    <div class="flow-title">Step 3: Mainline Dispatch Execution</div>
-                    <div class="flow-desc">Freight Sidetracked on Side Parking Track Loop ➔ Mainline Speed Preserved.</div>
+                    <div class="flow-title">Step 3: Multi-Loop Dispatch Execution</div>
+                    <div class="flow-desc">Freight Sidetracked on Siding Loops ➔ Mainline Speed Envelope Preserved.</div>
                 </div>
                 <div class="flow-arrow"></div>
                 <div class="flow-box flow-box-green">
@@ -1958,7 +2187,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
             fig_bar.update_layout(height=180, margin=dict(l=0, r=0, t=10, b=0), template="plotly_white")
             st.plotly_chart(fig_bar, use_container_width=True, config=PLOT_CONFIG)
 
-    # 13. SYSTEM ARCHITECTURE & LIVE HARDWARE CONNECTIVITY
+    # --------------------------------------------------------------------------
+    # 13. SYSTEM ARCHITECTURE & LIVE HARDWARE CONNECTIVITY[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "System Architecture & Live Hardware Connectivity":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>System Architecture & Live Hardware Connectivity</h1>", unsafe_allow_html=True)
         st.write("Physical edge sensors on the track connect via optical fiber cables and Indian Space Agency (ISRO) satellite positioning directly into our central automated dispatcher and train driver cab screens.")
@@ -2013,7 +2244,9 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
         })
         st.dataframe(sens_df, use_container_width=True, hide_index=True)
 
-    # 14. TECHNICAL SYSTEM GUIDE & OPERATIONS MANUAL
+    # --------------------------------------------------------------------------
+    # 14. TECHNICAL SYSTEM GUIDE & OPERATIONS MANUAL[cite: 1, 2]
+    # --------------------------------------------------------------------------
     elif active_tool == "Technical System Guide & Operations Manual":
         st.markdown(f"<h1 style='font-size:24px; color:#0F172A; font-weight:900; letter-spacing:-0.5px; margin-top:-10px;'>Technical System Guide & Operations Manual</h1>", unsafe_allow_html=True)
 
@@ -2046,7 +2279,7 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
                $$\\text{Avoided Downtime} = \\sum_{i=1}^m \\text{Duration}_i - \\max_{1 \\le i \\le m}(\\text{Duration}_i)$$
                Parallel execution across Track (TMS), Electrical (TDMS), and Signals (SMMS) raises corridor line availability to **95.2%**.
                
-            3. **15-Minute Conflict Prediction & Side Track Sidetracking**:
+            3. **15-Minute Conflict Prediction & Multi-Loop Sidetracking**:
                $$\\text{Priority}(\\text{High-Speed}) < \\text{Priority}(\\text{Superfast}) < \\text{Priority}(\\text{Freight})$$
                Lower-priority freight trains are automatically diverted to station loop sidings for 3 minutes, keeping the mainline clear for on-time passenger traffic.
                
@@ -2056,7 +2289,7 @@ if user_portal == "Central Command Center (Main Train Dispatch & Control Office)
             """)
 
 # ==============================================================================
-# 7. PORTAL 2: FIELD MAINTENANCE TERMINAL
+# 7. PORTAL 2: FIELD MAINTENANCE TERMINAL[cite: 1, 2]
 # ==============================================================================
 elif user_portal == "Field Maintenance Terminal (Station Engineers & Track Work Crews)":
     
